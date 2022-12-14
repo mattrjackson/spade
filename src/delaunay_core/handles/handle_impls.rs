@@ -4,6 +4,7 @@ use super::handle_defs::*;
 use super::iterators::CircularIterator;
 use super::iterators::NextBackFn;
 use super::public_handles::*;
+use crate::CdtEdge;
 use crate::{HasPosition, LineSideInfo, Point2};
 use num_traits::{Float, One, Signed};
 use std::cmp::Ordering;
@@ -412,6 +413,13 @@ where
     }
 }
 
+impl<'a, V, DE, UE, F> DirectedEdgeHandle<'a, V, DE, CdtEdge<UE>, F> {
+    /// Returns `true` if this edge is a constraint edge.
+    pub fn is_constraint_edge(self) -> bool {
+        self.as_undirected().is_constraint_edge()
+    }
+}
+
 impl FixedUndirectedEdgeHandle {
     /// Converts this directed edge into an undirected edge handle.
     ///
@@ -421,6 +429,11 @@ impl FixedUndirectedEdgeHandle {
     #[inline]
     pub fn as_directed(&self) -> FixedDirectedEdgeHandle {
         FixedDirectedEdgeHandle::new_normalized(self.index())
+    }
+
+    /// Returns the two directed edges of this undirected edge in any order.
+    pub fn directed_edges(&self) -> [FixedDirectedEdgeHandle; 2] {
+        [self.as_directed(), self.as_directed().rev()]
     }
 
     #[inline]
@@ -523,6 +536,13 @@ where
     pub fn distance_2(&self, query_point: Point2<V::Scalar>) -> V::Scalar {
         let [p1, p2] = self.positions();
         math::distance_2(p1, p2, query_point)
+    }
+}
+
+impl<'a, V, DE, UE, F> UndirectedEdgeHandle<'a, V, DE, CdtEdge<UE>, F> {
+    /// Returns `true` if this edge is a constraint edge.
+    pub fn is_constraint_edge(self) -> bool {
+        self.data().is_constraint_edge()
     }
 }
 
@@ -651,6 +671,18 @@ where
         let lambda2 = ((y3 - y1) * (x - x3) + (x1 - x3) * (y - y3)) / det;
         let lambda3 = V::Scalar::one() - lambda1 - lambda2;
         [lambda1, lambda2, lambda3]
+    }
+
+    pub(crate) fn shortest_edge(&self) -> (DirectedEdgeHandle<'a, V, DE, UE, F>, V::Scalar) {
+        let [e0, e1, e2] = self.adjacent_edges();
+        let [l0, l1, l2] = [e0.length_2(), e1.length_2(), e2.length_2()];
+        if l0 < l1 && l0 < l2 {
+            (e0, l0)
+        } else if l1 < l2 {
+            (e1, l1)
+        } else {
+            (e2, l2)
+        }
     }
 }
 

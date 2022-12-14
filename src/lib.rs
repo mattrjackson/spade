@@ -32,8 +32,8 @@ pub use crate::delaunay_core::math::{
 };
 
 pub use delaunay_core::{
-    HierarchyHintGenerator, HierarchyHintGeneratorWithBranchFactor, HintGenerator,
-    LastUsedVertexHintGenerator,
+    AngleLimit, HierarchyHintGenerator, HierarchyHintGeneratorWithBranchFactor, HintGenerator,
+    LastUsedVertexHintGenerator, RefinementParameters, RefinementResult,
 };
 
 pub use delaunay_core::LineSideInfo;

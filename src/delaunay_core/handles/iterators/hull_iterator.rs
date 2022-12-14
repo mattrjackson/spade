@@ -77,7 +77,7 @@ mod test {
     #[test]
     fn test_bigger_triangulation() -> Result<(), InsertionError> {
         let vertices = random_points_with_seed(100, SEED);
-        let triangulation = DelaunayTriangulation::<_>::bulk_load(vertices)?;
+        let triangulation = DelaunayTriangulation::<_>::bulk_load(vertices)?.0;
 
         let convex_hull: Vec<_> = triangulation.convex_hull().collect();
         let mut reversed: Vec<_> = triangulation.convex_hull().rev().collect();

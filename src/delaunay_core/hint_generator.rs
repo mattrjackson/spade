@@ -301,7 +301,7 @@ mod test {
     #[test]
     fn hierarchy_hint_generator_test() -> Result<(), InsertionError> {
         let vertices = test_utilities::random_points_with_seed(1025, test_utilities::SEED);
-        let triangulation = HierarchyTriangulation::bulk_load(vertices)?;
+        let triangulation = HierarchyTriangulation::bulk_load(vertices)?.0;
 
         hierarchy_sanity_check(&triangulation);
         Ok(())
@@ -337,14 +337,14 @@ mod test {
 
         for size in 0..5 {
             let vertices = test_utilities::random_points_with_seed(size, &seed_fn());
-            let triangulation = HierarchyTriangulation::bulk_load(vertices)?;
+            let triangulation = HierarchyTriangulation::bulk_load(vertices)?.0;
             hierarchy_sanity_check(&triangulation);
             triangulation.sanity_check();
         }
 
         for size in 1..20 {
             let vertices = test_utilities::random_points_with_seed(1 + size * 26, &seed_fn());
-            let triangulation = HierarchyTriangulation::bulk_load(vertices)?;
+            let triangulation = HierarchyTriangulation::bulk_load(vertices)?.0;
             hierarchy_sanity_check(&triangulation);
         }
         Ok(())
@@ -353,7 +353,7 @@ mod test {
     #[test]
     fn hierarchy_hint_generator_removal_test() -> Result<(), InsertionError> {
         let vertices = test_utilities::random_points_with_seed(300, test_utilities::SEED);
-        let mut triangulation = HierarchyTriangulation::bulk_load(vertices)?;
+        let mut triangulation = HierarchyTriangulation::bulk_load(vertices)?.0;
 
         let mut rng = rand::rngs::StdRng::from_seed(*test_utilities::SEED2);
         while let Some(to_remove) = triangulation

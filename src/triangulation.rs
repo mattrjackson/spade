@@ -132,10 +132,10 @@ pub trait Triangulation: Default {
     /// This graph shows the difference between incremental and bulk loading for a different number of random points - bulk loading becomes
     /// more efficient very quickly.
     #[doc = include_str!("../images/bulk_load_vs_incremental_graph.svg")]
-    fn bulk_load(elements: Vec<Self::Vertex>) -> Result<Self, InsertionError> {
-        let mut result: Self = crate::delaunay_core::bulk_load(elements)?;
-        let hint_generator = Self::HintGenerator::initialize_from_triangulation(&result);
-        *result.hint_generator_mut() = hint_generator;
+    fn bulk_load(elements: Vec<Self::Vertex>) -> Result<(Self, Vec<FixedVertexHandle>), InsertionError> {
+        let mut result = crate::delaunay_core::bulk_load::<Self::Vertex,Self>(elements)?;
+        let hint_generator = Self::HintGenerator::initialize_from_triangulation(&result.0);
+        *result.0.hint_generator_mut() = hint_generator;
         Ok(result)
     }
 

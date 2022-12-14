@@ -374,7 +374,7 @@ mod test {
         const SIZE: usize = 54;
         let points = random_points_with_seed(SIZE, SEED);
 
-        let d = DelaunayTriangulation::<_>::bulk_load(points.clone())?;
+        let d = DelaunayTriangulation::<_>::bulk_load(points.clone())?.0;
 
         let sample_points = random_points_with_seed(SIZE * 3, SEED);
         for p in sample_points {

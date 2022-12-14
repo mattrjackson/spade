@@ -30,7 +30,7 @@ pub fn locate_benchmark(c: &mut Criterion) {
                 .take(NUM_ELEMENTS)
                 .collect(),
         )
-        .unwrap();
+        .unwrap().0;
 
         let mut elements = elements.into_iter();
 

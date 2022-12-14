@@ -69,23 +69,18 @@ pub trait TriangulationExt: Triangulation {
                             InsertionResult::NewlyInserted(self.insert_into_face(face, t))
                         }
                         OnEdge(edge) => {
+                            let (new_handle, split_parts) = self.insert_on_edge(edge, t);
+
                             if self.is_defined_legal(edge.as_undirected()) {
                                 // If the edge is defined as legal the resulting edges must
                                 // be redefined as legal
-                                let handle = self.directed_edge(edge);
-                                let from = handle.from().fix();
-                                let to = handle.to().fix();
-
-                                let new_handle = self.insert_on_edge(edge, t);
-                                let e1 = self.get_edge_from_neighbors(from, new_handle).unwrap();
-                                let e2 = self.get_edge_from_neighbors(new_handle, to).unwrap();
-                                let handles = [e1.fix().as_undirected(), e2.fix().as_undirected()];
-
-                                self.handle_legal_edge_split(handles);
-                                InsertionResult::NewlyInserted(new_handle)
-                            } else {
-                                InsertionResult::NewlyInserted(self.insert_on_edge(edge, t))
+                                self.handle_legal_edge_split(
+                                    split_parts.map(|edge| edge.as_undirected()),
+                                );
                             }
+                            self.legalize_vertex(new_handle);
+
+                            InsertionResult::NewlyInserted(new_handle)
                         }
                         OnVertex(vertex) => {
                             self.s_mut().update_vertex(vertex, t);
@@ -314,21 +309,21 @@ pub trait TriangulationExt: Triangulation {
         &mut self,
         edge: FixedDirectedEdgeHandle,
         new_vertex: Self::Vertex,
-    ) -> FixedVertexHandle {
+    ) -> (FixedVertexHandle, [FixedDirectedEdgeHandle; 2]) {
         let edge_handle = self.directed_edge(edge);
-        let new_vertex = if edge_handle.is_outer_edge() {
-            dcel_operations::split_half_edge(self.s_mut(), edge.rev(), new_vertex)
+        if edge_handle.is_outer_edge() {
+            let (new_vertex, [e0, e1]) =
+                dcel_operations::split_half_edge(self.s_mut(), edge.rev(), new_vertex);
+            (new_vertex, [e1.rev(), e0.rev()])
         } else if edge_handle.rev().is_outer_edge() {
             dcel_operations::split_half_edge(self.s_mut(), edge, new_vertex)
         } else {
             dcel_operations::split_edge(self.s_mut(), edge, new_vertex)
-        };
-        self.legalize_vertex(new_vertex);
-        new_vertex
+        }
     }
 
     fn legalize_vertex(&mut self, new_handle: FixedVertexHandle) {
-        let edges: SmallVec<[_; 3]> = self
+        let edges: SmallVec<[_; 4]> = self
             .vertex(new_handle)
             .out_edges()
             .filter(|e| !e.is_outer_edge())
@@ -393,7 +388,7 @@ pub trait TriangulationExt: Triangulation {
                 if let (Some(v2), Some(v3)) = (v2, v3) {
                     let v0 = edge.from().position();
                     let v1 = edge.to().position();
-                    //debug_assert!(math::is_ordered_ccw(v2, v1, v0));
+                    debug_assert!(math::is_ordered_ccw(v2, v1, v0));
                     let should_flip = math::contained_in_circumference(v2, v1, v0, v3);
                     result |= should_flip;
 
@@ -941,7 +936,7 @@ mod test {
     fn test_iterate_faces() -> Result<(), InsertionError> {
         const SIZE: usize = 1000;
         let points = random_points_with_seed(SIZE, SEED);
-        let mut d = DelaunayTriangulation::<Point2<f64>>::bulk_load(points)?;
+        let mut d = DelaunayTriangulation::<Point2<f64>>::bulk_load(points)?.0;
         d.sanity_check();
 
         assert_eq!(d.all_faces().count(), d.num_all_faces());
@@ -998,7 +993,7 @@ mod test {
             Point2::new(1.3, 2.2),
             Point2::new(0.0, 0.0),
         ];
-        let mut d = DelaunayTriangulation::<_>::bulk_load(points.clone())?;
+        let mut d = DelaunayTriangulation::<_>::bulk_load(points.clone())?.0;
 
         for p in &points {
             d.insert(*p)?;
@@ -1013,7 +1008,7 @@ mod test {
     fn test_insert_same_point() -> Result<(), InsertionError> {
         const SIZE: usize = 300;
         let points = random_points_with_seed(SIZE, SEED);
-        let mut d = DelaunayTriangulation::<_>::bulk_load(points.clone())?;
+        let mut d = DelaunayTriangulation::<_>::bulk_load(points.clone())?.0;
         for p in points {
             d.insert(p)?;
         }
@@ -1030,7 +1025,7 @@ mod test {
             Point2::new(0., 1.),
             Point2::new(0., 0.4),
         ];
-        let d = DelaunayTriangulation::<_>::bulk_load(points)?;
+        let d = DelaunayTriangulation::<_>::bulk_load(points)?.0;
         d.sanity_check();
         Ok(())
     }
@@ -1038,7 +1033,7 @@ mod test {
     #[test]
     fn test_insert_on_edges() -> Result<(), InsertionError> {
         let points = vec![Point2::new(0., 0f64), Point2::new(1., 0.)];
-        let mut d = DelaunayTriangulation::<_>::bulk_load(points)?;
+        let mut d = DelaunayTriangulation::<_>::bulk_load(points)?.0;
 
         d.insert(Point2::new(1., 1.))?;
         d.sanity_check();
@@ -1133,7 +1128,7 @@ mod test {
             }
         }
         points.sort_by(|p1, p2| p1.length2().partial_cmp(&p2.length2()).unwrap());
-        let d = DelaunayTriangulation::<_>::bulk_load(points)?;
+        let d = DelaunayTriangulation::<_>::bulk_load(points)?.0;
         d.sanity_check();
         Ok(())
     }
@@ -1145,7 +1140,7 @@ mod test {
             Point2::new(1.0, 0.0f64),
             Point2::new(0.0, 1.0f64),
         ];
-        let mut d = DelaunayTriangulation::<_>::bulk_load(points)?;
+        let mut d = DelaunayTriangulation::<_>::bulk_load(points)?.0;
         let to_remove = d.insert(Point2::new(0.0, 0.5))?;
         d.remove(to_remove);
         assert_eq!(d.num_vertices(), 3);
@@ -1201,7 +1196,7 @@ mod test {
             Point2::new(1.0, 1.0f64),
         ];
 
-        let mut d = DelaunayTriangulation::<_>::bulk_load(points)?;
+        let mut d = DelaunayTriangulation::<_>::bulk_load(points)?.0;
 
         let to_remove = d.insert(Point2::new(0.5, 0.6))?;
         d.remove(to_remove);
@@ -1234,7 +1229,7 @@ mod test {
         points.shuffle(&mut rng);
         for _ in 0..20 {
             points.shuffle(&mut rng);
-            let mut d = DelaunayTriangulation::<_>::bulk_load(points.clone())?;
+            let mut d = DelaunayTriangulation::<_>::bulk_load(points.clone())?.0;
             d.locate_and_remove(Point2::new(0.0, 0.0));
             d.sanity_check();
         }
@@ -1247,7 +1242,7 @@ mod test {
         use PositionInTriangulation::OnVertex;
 
         let mut points = random_points_with_seed(1000, SEED);
-        let mut d = DelaunayTriangulation::<_>::bulk_load(points.clone())?;
+        let mut d = DelaunayTriangulation::<_>::bulk_load(points.clone())?.0;
 
         // Insert an outer quad since we don't want to remove vertices from
         // the convex hull.
@@ -1277,7 +1272,7 @@ mod test {
         use PositionInTriangulation::OnVertex;
 
         let mut points = random_points_with_seed(1000, SEED);
-        let mut d = DelaunayTriangulation::<_>::bulk_load(points.clone())?;
+        let mut d = DelaunayTriangulation::<_>::bulk_load(points.clone())?.0;
 
         points.sort_by(|p1, p2| p1.length2().partial_cmp(&p2.length2()).unwrap());
         for (index, point) in points[3..].iter().rev().enumerate() {
@@ -1299,7 +1294,7 @@ mod test {
     #[test]
     fn test_removal_and_insertion() -> Result<(), InsertionError> {
         let points = random_points_with_seed(1000, SEED);
-        let mut d = DelaunayTriangulation::<_>::bulk_load(points)?;
+        let mut d = DelaunayTriangulation::<_>::bulk_load(points)?.0;
 
         let mut rng = rand::rngs::StdRng::from_seed(*SEED);
         for _ in 0..1000 {
@@ -1325,7 +1320,7 @@ mod test {
             Point2::new(0.0, 0.0),
             Point2::new(0.0, 1.0),
             Point2::new(1.0, 2.0),
-        ])?;
+        ])?.0;
 
         while let Some(to_remove) = d.vertices().next() {
             let to_remove = to_remove.fix();
@@ -1353,7 +1348,7 @@ mod test {
             Point2::new(0., 0.25),
             Point2::new(0., 0.75),
         ];
-        let mut d = DelaunayTriangulation::<_>::bulk_load(points)?;
+        let mut d = DelaunayTriangulation::<_>::bulk_load(points)?.0;
 
         assert_eq!(d.num_all_faces(), 5);
         d.locate_and_remove(Point2::new(1., 0.));
@@ -1384,7 +1379,7 @@ mod test {
             Point2::new(50.0, 50.0),
             Point2::new(50.0, 80.0),
             Point2::new(75.0, 80.0),
-        ])?;
+        ])?.0;
 
         triangulation.remove(FixedVertexHandle::new(5));
         triangulation.sanity_check();
@@ -1399,7 +1394,7 @@ mod test {
             Point2::new(0.0, 0.0),
             Point2::new(1.0, 0.0), // This point will be removed
             Point2::new(2.0, 0.0),
-        ])?;
+        ])?.0;
         triangulation.remove(FixedVertexHandle::new(2));
         triangulation.sanity_check();
         Ok(())
@@ -1465,7 +1460,7 @@ mod test {
             Point2::new(0.0, 0.0),
             Point2::new(1.0, 0.0),
             Point2::new(2.0, 0.0),
-        ])?;
+        ])?.0;
         triangulation.remove(FixedVertexHandle::new(2));
         triangulation.sanity_check();
         Ok(())
