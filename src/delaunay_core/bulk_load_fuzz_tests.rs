@@ -6,7 +6,7 @@ fn fuzz_test(vertices: Vec<Point2<f64>>) {
     clone.dedup();
     let expected_size = clone.len();
 
-    let triangulation = DelaunayTriangulation::<_>::bulk_load(vertices).unwrap();
+    let triangulation = DelaunayTriangulation::<_>::bulk_load(vertices).unwrap().0;
     triangulation.sanity_check();
     assert_eq!(triangulation.num_vertices(), expected_size);
 }

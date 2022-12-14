@@ -239,7 +239,12 @@ where
                             Some(Intersection::EdgeOverlap(edge))
                         }
                         VertexOutDirection::EdgeIntersection(edge) => {
-                            Some(Intersection::EdgeIntersection(edge))
+                            if edge.side_query(self.line_to).is_on_right_side() {
+                                // The target point was skipped over - the iteration can finish
+                                None
+                            } else {
+                                Some(Intersection::EdgeIntersection(edge))
+                            }
                         }
                     }
                 }

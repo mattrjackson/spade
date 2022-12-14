@@ -311,51 +311,16 @@ impl<S: SpadeNum + Float> RefinementParameters<S> {
         if triangulation.all_vertices_on_line() {
             return self;
         }
-
-        // Determine excluded faces by "peeling of" outer layers and adding them to an outer layer set.
-        // This needs to be done repeatedly to also get inner "holes" within the triangulation
-        let mut inner_faces = HashSet::new();
         let mut outer_faces = HashSet::new();
-
-        let mut current_todo_list: Vec<_> =
-            triangulation.convex_hull().map(|edge| edge.rev()).collect();
-        let mut next_todo_list = Vec::new();
-
-        let mut return_outer_faces = true;
-
-        loop {
-            // Every iteration of the outer while loop will peel of the outmost layer and pre-populate the
-            // next, inner layer.
-            while let Some(next_edge) = current_todo_list.pop() {
-                let (list, face_set) = if next_edge.is_constraint_edge() {
-                    // We're crossing a constraint edge - add that face to the *next* todo list
-                    (&mut next_todo_list, &mut inner_faces)
-                } else {
-                    (&mut current_todo_list, &mut outer_faces)
-                };
-
-                if let Some(inner) = next_edge.face().as_inner() {
-                    if face_set.insert(inner.fix()) {
-                        list.push(next_edge.prev().rev());
-                        list.push(next_edge.next().rev());
-                    }
-                }
+        let inner_faces = triangulation.constrained_faces();
+        for face in triangulation.inner_faces()
+        {
+            if !inner_faces.contains(&face.fix())
+            {
+                outer_faces.insert(face.fix());
             }
-
-            if next_todo_list.is_empty() {
-                break;
-            }
-            std::mem::swap(&mut inner_faces, &mut outer_faces);
-            std::mem::swap(&mut next_todo_list, &mut current_todo_list);
-
-            return_outer_faces = !return_outer_faces;
         }
-
-        self.excluded_faces = if return_outer_faces {
-            outer_faces
-        } else {
-            inner_faces
-        };
+        self.excluded_faces = outer_faces;
 
         self
     }
@@ -958,7 +923,7 @@ mod test {
         vertices.push(Point2::new(-100.0, 100.0));
         vertices.push(Point2::new(0.0, 100.0));
 
-        let mut cdt = Cdt::bulk_load(vertices)?;
+        let mut cdt = Cdt::bulk_load(vertices)?.0;
 
         let initial_num_vertices = cdt.num_vertices();
         cdt.refine(RefinementParameters::new().with_angle_limit(limit));
@@ -995,7 +960,7 @@ mod test {
     #[test]
     fn test_small_refinement() -> Result<(), InsertionError> {
         let vertices = random_points_with_seed(20, SEED);
-        let mut cdt = Cdt::bulk_load(vertices)?;
+        let mut cdt = Cdt::bulk_load(vertices)?.0;
 
         let mut peekable = cdt.fixed_vertices().peekable();
         while let (Some(p0), Some(p1)) = (peekable.next(), peekable.peek()) {
@@ -1129,5 +1094,74 @@ mod test {
         cdt.refine(RefinementParameters::new().exclude_outer_faces(&cdt));
 
         Ok(())
+    }
+    #[test]
+    fn test_cdt_refinement()
+    {
+        let outer =
+            [
+                Point2::new(0.000619303491076,0.000353837537871),
+                Point2::new(0.000611664183070,0.000203977070182),
+                Point2::new(0.000900820118014,0.000199425993072),
+                Point2::new(0.000896756656308,0.000348636306888),
+                Point2::new(0.000739146120097,0.000316796999517),
+                Point2::new(0.000619303491076,0.000353837537871)
+            ];
+        let inner1 = 
+        [
+            Point2::new(0.000684806180157,0.000301508215309),
+            Point2::new(0.000649364819489,0.000281208468823),
+            Point2::new(0.000667834260964,0.000240442584486),
+            Point2::new(0.000714756625793,0.000276216727884),
+            Point2::new(0.000684806180157,0.000301508215309)
+        ];
+        let inner2 =
+        [
+            Point2::new(0.000813260313660,0.000301674606674),
+            Point2::new(0.000768001862478,0.000280043729270),
+            Point2::new(0.000767169905655,0.000239444236298),
+            Point2::new(0.000806937441804,0.000220974794823),
+            Point2::new(0.000842545193837,0.000225800144397),
+            Point2::new(0.000856688459832,0.000251590805917),
+            Point2::new(0.000856688459832,0.000290692776608),
+            Point2::new(0.000849866413882,0.000305335216696),
+            Point2::new(0.000813260313660,0.000301674606674)
+        ];
+        let mut cdt = Cdt::new();
+        for i in 0.. outer.len() - 1
+        {
+           assert!(cdt.add_constraint_edge(outer[i], outer[i+1]).is_ok());    
+        }
+        assert!(cdt.add_constraint_edge(outer[outer.len()-1], outer[0]).is_ok());   
+        for i in 0.. inner1.len() - 1
+        {
+            assert!(cdt.add_constraint_edge(inner1[i], inner1[i+1]).is_ok());    
+        }
+        assert!(cdt.add_constraint_edge(inner1[inner1.len()-1], inner1[0]).is_ok());
+        
+        for i in 0.. inner2.len() - 1
+        {
+            assert!(cdt.add_constraint_edge(inner2[i], inner2[i+1]).is_ok());
+        }
+        assert!(cdt.add_constraint_edge(inner2[inner2.len()-1], inner2[0]).is_ok());
+        
+        let rp = RefinementParameters::new().
+            with_angle_limit(AngleLimit::from_deg(30.0)).
+            with_max_additional_vertices(10000).
+            exclude_outer_faces(&cdt).
+            with_max_allowed_area(1e-10).
+            with_min_required_area(0.0);
+        cdt.refine(rp);
+       
+        //println!("{}",cdt.vertices().len());
+        for fh in cdt.constrained_faces()
+        {
+            let  face = cdt.face(fh);
+            let v1 = face.vertices()[0].position();
+            let v2 = face.vertices()[1].position();
+            let v3 = face.vertices()[2].position();
+            println!("POLYGON(({} {},{} {}, {} {}, {} {}))", v1.x, v1.y, v2.x, v2.y, v3.x, v3.y, v1.x, v1.y);
+        }
+        
     }
 }

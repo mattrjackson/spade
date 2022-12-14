@@ -38,6 +38,6 @@ where
     }
 
     fn run_creation(&self) -> Self::ResultType {
-        Self::ResultType::bulk_load(self.vertices.clone()).unwrap()
+        Self::ResultType::bulk_load(self.vertices.clone()).unwrap().0
     }
 }

@@ -2,7 +2,7 @@ use std::cmp::{Ordering, Reverse};
 
 use crate::{HasPosition, InsertionError, Point2, Triangulation, TriangulationExt};
 
-use super::{dcel_operations, FixedDirectedEdgeHandle, FixedUndirectedEdgeHandle};
+use super::{dcel_operations, FixedDirectedEdgeHandle, FixedUndirectedEdgeHandle, FixedVertexHandle};
 
 /// An `f64` wrapper implementing `Ord` and `Eq`.
 ///
@@ -66,13 +66,13 @@ impl Eq for FloatOrd {}
 /// In rare cases, step 6 is not able to insert a vertex properly. It will be skipped and inserted
 /// regularly at the end (slow path). This may happen especially for very skewed triangulations
 /// and might be a good point for investigation if some point sets takes surprisingly long to load.
-pub fn bulk_load<V, T>(mut elements: Vec<V>) -> Result<T, InsertionError>
+pub fn bulk_load<V, T>(mut elements: Vec<V>) -> Result<(T, Vec<FixedVertexHandle>), InsertionError>
 where
     V: HasPosition,
     T: Triangulation<Vertex = V>,
 {
     if elements.is_empty() {
-        return Ok(T::new());
+        return Ok((T::new(), Vec::new()));
     }
 
     let mut point_sum = Point2::<f64>::new(0.0, 0.0);
@@ -97,10 +97,29 @@ where
     let mut result = T::with_capacity(elements.len(), elements.len() * 3, elements.len() * 2);
 
     // Sort by distance, smallest values last. This allows to pop values depending on their distance.
+    
+    let mut indicesm: Vec<_> = elements.iter().enumerate().collect();
+    indicesm.sort_unstable_by_key(|&(_, e)| {
+        FloatOrd(initial_center.distance_2(e.position().to_f64()))
+    });
+    // Extract the indices from the sorted vector
+    let indices_rev: Vec<usize> = indicesm.into_iter().map(|(i, _)| i).collect();
     elements.sort_unstable_by_key(|e| {
         Reverse(FloatOrd(initial_center.distance_2(e.position().to_f64())))
     });
-
+    let mut indices: Vec<usize> = Vec::new();
+    indices.resize(indices_rev.len(), 0);
+    for i in 0..indices_rev.len()
+    {
+        indices[indices_rev[i]] = i;
+    }
+    
+    let mut vh :Vec<FixedVertexHandle> = Vec::new();
+    
+    for i in 0..indices.len()
+    {
+        vh.push(FixedVertexHandle::new(indices[i]));
+    }
     while let Some(next) = elements.pop() {
         result.insert(next)?;
         if !result.all_vertices_on_line() && result.num_vertices() >= 4 {
@@ -111,7 +130,7 @@ where
     }
 
     if elements.is_empty() {
-        return Ok(result);
+        return Ok((result, vh));
     }
 
     // Get new center that is guaranteed to be within the convex hull
@@ -143,7 +162,7 @@ where
         if let Some(next) = elements.pop() {
             result.insert(next).unwrap();
         } else {
-            return Ok(result);
+            return Ok((result, vh));
         }
     };
 
@@ -165,7 +184,8 @@ where
         result.insert(element)?;
     }
 
-    Ok(result)
+
+    Ok((result, vh))
 }
 
 #[inline(never)] // Prevent inlining for better profiling data
@@ -758,7 +778,7 @@ mod test {
     fn test_bulk_load_with_small_number_of_vertices() -> Result<(), InsertionError> {
         for size in 0..10 {
             let triangulation =
-                DelaunayTriangulation::<_>::bulk_load(random_points_with_seed(size, SEED2))?;
+                DelaunayTriangulation::<_>::bulk_load(random_points_with_seed(size, SEED2))?.0;
 
             assert_eq!(triangulation.num_vertices(), size);
             triangulation.sanity_check();
@@ -783,7 +803,7 @@ mod test {
             }
 
             vertices.shuffle(&mut rng);
-            let triangulation = DelaunayTriangulation::<_>::bulk_load(vertices)?;
+            let triangulation = DelaunayTriangulation::<_>::bulk_load(vertices)?.0;
             assert_eq!(triangulation.num_vertices(), GRID_SIZE * GRID_SIZE);
             triangulation.sanity_check();
         }
@@ -815,7 +835,7 @@ mod test {
             }
 
             vertices.shuffle(&mut rng);
-            let triangulation = DelaunayTriangulation::<_>::bulk_load(vertices)?;
+            let triangulation = DelaunayTriangulation::<_>::bulk_load(vertices)?.0;
             assert_eq!(triangulation.num_vertices(), GRID_SIZE * GRID_SIZE);
             triangulation.sanity_check();
         }
@@ -844,7 +864,7 @@ mod test {
 
         let num_vertices = vertices.len();
 
-        let triangulation = DelaunayTriangulation::<Point2<f64>>::bulk_load(vertices)?;
+        let triangulation = DelaunayTriangulation::<Point2<f64>>::bulk_load(vertices)?.0;
         triangulation.sanity_check();
         assert_eq!(triangulation.num_vertices(), num_vertices);
         Ok(())

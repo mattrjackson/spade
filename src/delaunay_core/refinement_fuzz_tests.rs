@@ -11,7 +11,7 @@ fn fuzz_test(
     vertices: Vec<Point2<f64>>,
     edges: Vec<[Point2<f64>; 2]>,
 ) -> Result<(), InsertionError> {
-    let mut triangulation = ConstrainedDelaunayTriangulation::<_>::bulk_load(vertices)?;
+    let mut triangulation = ConstrainedDelaunayTriangulation::<_>::bulk_load(vertices)?.0;
     let result = triangulation.refine(refinement_parameters());
     for edge in edges {
         triangulation.add_constraint_edge(edge[0], edge[1])?;

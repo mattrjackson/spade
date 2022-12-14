@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use crate::{delaunay_core::Dcel, intersection_iterator::LineIntersectionIterator};
 use crate::{handles::*, intersection_iterator::Intersection};
 use crate::{
@@ -286,6 +287,51 @@ where
         })
     }
 
+    ///
+    /// This method retrieves the constrained faces for the triangulation. 
+    /// 
+    pub fn constrained_faces(&self) -> HashSet<FixedFaceHandle<InnerTag>>
+    {
+        // Moved from exclude_outer_faces
+        // Determine excluded faces by "peeling of" outer layers and adding them to an outer layer set.
+        // This needs to be done repeatedly to also get inner "holes" within the triangulation
+        let mut inner_faces = HashSet::new();
+        let mut outer_faces = HashSet::new();
+
+        let mut current_todo_list: Vec<_> =
+            self.convex_hull().map(|edge| edge.rev()).collect();
+        let mut next_todo_list = Vec::new();
+
+
+        loop {
+            // Every iteration of the outer while loop will peel of the outmost layer and pre-populate the
+            // next, inner layer.
+            while let Some(next_edge) = current_todo_list.pop() {
+                let (list, face_set) = if next_edge.is_constraint_edge() {
+                    // We're crossing a constraint edge - add that face to the *next* todo list
+                    (&mut next_todo_list, &mut inner_faces)
+                } else {
+                    (&mut current_todo_list, &mut outer_faces)
+                };
+
+                if let Some(inner) = next_edge.face().as_inner() {
+                    if face_set.insert(inner.fix()) {
+                        list.push(next_edge.prev().rev());
+                        list.push(next_edge.next().rev());
+                    }
+                }
+            }
+
+            if next_todo_list.is_empty() {
+                break;
+            }
+            std::mem::swap(&mut inner_faces, &mut outer_faces);
+            std::mem::swap(&mut next_todo_list, &mut current_todo_list);
+
+        }
+        inner_faces
+    }
+
     /// Creates a several constraint edges by taking and connecting vertices from an iterator.
     ///
     /// Every two sequential vertices in the input iterator will be connected by a constraint edge.
@@ -396,7 +442,7 @@ where
                 // Panic: A constraint edge should never be able to cross the convex hull
                 VertexOutDirection::ConvexHull => panic!("Should not be reachable. This is a bug."),
                 VertexOutDirection::EdgeOverlap(edge) => {
-                    cur_from = edge.to().fix();
+                    cur_from = edge.to().fix();                    
                     let edge = edge.fix().as_undirected();
                     result |= self.make_constraint_edge(edge);
                     continue;
@@ -1014,7 +1060,39 @@ mod test {
 
         cdt.add_constraint(v0, v1);
     }
+    #[test]
+    fn constraint_edge_test_failure()
+    {
+        use crate::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
+        let vertices = vec![
+        Point2::new(60.0, 20.0),
+        Point2::new(84.0, 20.0),
+        Point2::new(236.0, 20.0),
+        Point2::new(60.0, 36.0),
+        Point2::new(84.0, 36.0),
+        Point2::new(92.0, 28.0),
+        Point2::new(60.0, 44.0),
+        Point2::new(92.0, 44.0),
+        Point2::new(212.0, 44.0),
+        Point2::new(20.0, 60.0),
+        Point2::new(156.0, 68.0),
+    ];
 
+    let edges = vec![(1, 2), (0, 3)];
+
+    let result =
+        ConstrainedDelaunayTriangulation::<Point2<f32>>::bulk_load(vertices).unwrap();
+    let mut triangulation = result.0;
+        println!("num of vertices={cnt}",cnt=triangulation.vertices().len());
+    let vertex_handles = result.1;
+    for (from, to) in edges {      
+        println!(
+            "{:?} ({:?}), {:?} ({:?})",
+            triangulation.vertex(vertex_handles[from]).position(), vertex_handles[from], triangulation.vertex(vertex_handles[to]).position(), vertex_handles[to]
+        );
+        triangulation.add_constraint(vertex_handles[from], vertex_handles[to]);
+    }
+    }
     #[test]
     fn test_cdt_remove_degenerate() -> Result<(), InsertionError> {
         let mut cdt = Cdt::new();
@@ -1023,7 +1101,7 @@ mod test {
         let v2 = cdt.insert(Point2::new(0.0, 1.0))?;
         cdt.add_constraint(v0, v1);
         cdt.add_constraint(v1, v2);
-        cdt.add_constraint(v2, v0);
+        cdt.add_constraint(v2, v0); 
         assert_eq!(cdt.num_constraints(), 3);
         cdt.remove(v1);
         assert_eq!(cdt.num_constraints(), 1);
