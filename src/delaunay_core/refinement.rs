@@ -1,9 +1,12 @@
+use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet, VecDeque};
-
+use std::fs::File;
+use std::ops::Fn;
+use std::io::{Write, BufReader, BufRead, Error};
 use num_traits::Float;
 
 use crate::{
-    delaunay_core::math, CdtEdge, ConstrainedDelaunayTriangulation, HasPosition, HintGenerator,
+    delaunay_core::{math, VertexTag}, CdtEdge, ConstrainedDelaunayTriangulation, HasPosition, HintGenerator,
     Point2, PositionInTriangulation, SpadeNum, Triangulation,
 };
 
@@ -133,12 +136,11 @@ impl Default for AngleLimit {
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Clone, Copy, Hash)]
-enum RefinementHint {
+pub enum RefinementHint {
     Ignore,
     ShouldRefine,
     MustRefine,
 }
-
 /// Controls how a refinement is performed.
 ///
 /// Refer to [ConstrainedDelaunayTriangulation::refine] and methods implemented by this type for more details
@@ -160,18 +162,30 @@ enum RefinementHint {
 ///     cdt.refine(params);
 /// }
 /// ```
-#[derive(Debug, PartialEq, Clone)]
-pub struct RefinementParameters<S: SpadeNum + Float> {
+pub struct RefinementParameters<Vertex, Face, S: SpadeNum + Float, DE, UE>
+where Vertex:HasPosition,DE:Default, UE:Default
+ {
     max_additional_vertices: Option<usize>,
-
     angle_limit: AngleLimit,
     min_area: Option<S>,
     max_area: Option<S>,
     keep_constraint_edges: bool,
     excluded_faces: HashSet<FixedFaceHandle<InnerTag>>,
+    custom_predicate: Option<Box<dyn Fn(FaceHandle<InnerTag, Vertex, DE, CdtEdge<UE>, Face>)->RefinementHint>>
+}
+impl<Vertex, Face, S, DE, UE> PartialEq for RefinementParameters<Vertex, Face, S, DE, UE>
+where S:SpadeNum+Float, Vertex:HasPosition,DE:Default, UE:Default
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.max_additional_vertices == other.max_additional_vertices && self.angle_limit == other.angle_limit &&
+         self.min_area == other.min_area && self.max_area == other.max_area && self.keep_constraint_edges == other.keep_constraint_edges && 
+         self.excluded_faces == other.excluded_faces
+    }
 }
 
-impl<S: SpadeNum + Float> Default for RefinementParameters<S> {
+impl<Vertex, Face, S: SpadeNum + Float, DE, UE> Default for RefinementParameters<Vertex, Face, S, DE, UE> 
+where Vertex:HasPosition,DE:Default, UE:Default
+{
     fn default() -> Self {
         Self {
             max_additional_vertices: None,
@@ -180,11 +194,14 @@ impl<S: SpadeNum + Float> Default for RefinementParameters<S> {
             max_area: None,
             excluded_faces: HashSet::new(),
             keep_constraint_edges: false,
+            custom_predicate: None
         }
     }
 }
 
-impl<S: SpadeNum + Float> RefinementParameters<S> {
+impl<Vertex, Face,  S: SpadeNum + Float, DE, UE> RefinementParameters<Vertex, Face, S, DE, UE>
+where Face:Default, Vertex:HasPosition,DE:Default, UE:Default
+ {
     /// Creates a new set of `RefinementParameters`.
     ///
     /// The following values will be used by `new` and `Self::default`:
@@ -220,6 +237,12 @@ impl<S: SpadeNum + Float> RefinementParameters<S> {
     /// *See also [ConstrainedDelaunayTriangulation::refine]*
     pub fn with_angle_limit(mut self, angle_limit: AngleLimit) -> Self {
         self.angle_limit = angle_limit;
+        self
+    }
+
+    pub fn with_custom_predicate(mut self, custom_predicate:Option<Box<dyn Fn(FaceHandle<InnerTag, Vertex, DE, CdtEdge<UE>, Face>)->RefinementHint>>) -> Self
+    {
+        self.custom_predicate = custom_predicate;
         self
     }
 
@@ -304,9 +327,10 @@ impl<S: SpadeNum + Float> RefinementParameters<S> {
     ///
     /// *A refinement operation configured to exclude outer faces. All colored faces are considered outer faces and are
     /// ignored during refinement. Note that the inner part of the "A" shape forms a hole and is also excluded.*
-    pub fn exclude_outer_faces<V: HasPosition, DE: Default, UE: Default, F: Default>(
+    pub fn exclude_outer_faces
+    (
         mut self,
-        triangulation: &ConstrainedDelaunayTriangulation<V, DE, UE, F>,
+        triangulation: &ConstrainedDelaunayTriangulation<Vertex, DE, UE, Face>,
     ) -> Self {
         if triangulation.all_vertices_on_line() {
             return self;
@@ -325,23 +349,32 @@ impl<S: SpadeNum + Float> RefinementParameters<S> {
         self
     }
 
-    fn get_refinement_hint<V, DE, UE, F>(
+    fn get_refinement_hint(
         &self,
-        face: FaceHandle<InnerTag, V, DE, UE, F>,
+        face: FaceHandle<InnerTag, Vertex, DE, CdtEdge<UE>, Face>,
     ) -> RefinementHint
     where
-        V: HasPosition<Scalar = S>,
+        Vertex: HasPosition<Scalar = S>,
+        Face:Default,DE:Default, UE:Default
     {
         if let Some(max_area) = self.max_area {
             if face.area() > max_area {
                 return RefinementHint::MustRefine;
             }
         }
-
         if let Some(min_area) = self.min_area {
             if face.area() < min_area {
                 return RefinementHint::Ignore;
             }
+        }
+        if let Some(custom_predicate) = &self.custom_predicate
+        {
+            let verts= face.vertices();
+            let vertices:[&Vertex;3] = [verts[0].data(),verts[1].data(),verts[2].data()]; 
+             if custom_predicate(face) == RefinementHint::MustRefine
+             {                
+                return RefinementHint::MustRefine;
+             } 
         }
 
         let (_, length2) = face.shortest_edge();
@@ -464,7 +497,7 @@ where
     ///
     #[doc(alias = "Refinement")]
     #[doc(alias = "Delaunay Refinement")]
-    pub fn refine(&mut self, mut parameters: RefinementParameters<V::Scalar>) -> RefinementResult {
+    pub fn refine(&mut self, mut parameters:RefinementParameters<V,F,V::Scalar,DE,UE>) -> RefinementResult {
         use PositionInTriangulation::*;
 
         let mut excluded_faces = std::mem::take(&mut parameters.excluded_faces);
@@ -707,11 +740,11 @@ where
                 }
 
                 if !is_encroaching {
-                    // The circumcenter doesn't encroach any segment. Continue really inserting it.
+                    // The circumcenter doesn't encroach any segment. Continue really inserting it.                    
                     let new_vertex = self
                         .insert_with_hint(circumcenter.into(), locate_hint)
                         .expect("Failed to insert circumcenter, likely due to loss of precision. Consider refining with fewer additional vertices.");
-
+                    let dh = self.vertex(new_vertex);
                     // Add all new and changed faces to the skinny candidate list
                     skinny_triangle_candidates.extend(
                         self.vertex(new_vertex)
@@ -887,12 +920,12 @@ fn nearest_power_of_two<S: Float + SpadeNum>(input: S) -> S {
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashSet;
+    use std::{collections::HashSet, io::{BufWriter, Write}, f64::consts::PI};
 
     use crate::{
         test_utilities::{random_points_with_seed, SEED},
         AngleLimit, ConstrainedDelaunayTriangulation, InsertionError, Point2, RefinementParameters,
-        Triangulation as _,
+        Triangulation as _, HasPosition, delaunay_core::{refinement::RefinementHint, FaceTag, DirectedEdgeTag, UndirectedEdgeTag},
     };
 
     pub type Cdt = ConstrainedDelaunayTriangulation<Point2<f64>>;
@@ -1013,7 +1046,7 @@ mod test {
             cdt.add_constraint_edge(p1, p2)?;
         }
 
-        let excluded_faces = RefinementParameters::<f64>::new()
+        let excluded_faces = RefinementParameters::<_,_,f64,_,_>::new()
             .exclude_outer_faces(&cdt)
             .excluded_faces;
 
@@ -1051,7 +1084,7 @@ mod test {
 
         let scale_factors = [1.0, 2.0, 3.0, 4.0];
 
-        let mut current_excluded_faces = RefinementParameters::<f64>::new()
+        let mut current_excluded_faces = RefinementParameters::<_,_,f64,_,_>::new()
             .exclude_outer_faces(&cdt)
             .excluded_faces;
 
@@ -1060,7 +1093,7 @@ mod test {
         for factor in scale_factors {
             cdt.add_constraint_edges(test_shape().iter().map(|p| p.mul(factor)), true)?;
 
-            let next_excluded_faces = RefinementParameters::<f64>::new()
+            let next_excluded_faces = RefinementParameters::<_,_,f64,_,_>::new()
                 .exclude_outer_faces(&cdt)
                 .excluded_faces;
 
@@ -1095,6 +1128,44 @@ mod test {
 
         Ok(())
     }
+    #[derive(Copy, Clone)]
+    struct VertexWithData
+    {
+        position: cgmath::Point2<f64>,
+        value: f64
+    }
+    impl From<Point2<f64>> for VertexWithData {
+        fn from(point: Point2<f64>) -> Self {
+            Self::new(point.x, point.y)
+        }
+    }
+    
+    impl VertexWithData {
+        pub fn f(x: f64, y:f64)->f64
+        {
+            1e6* f64::sin(f64::sqrt((x-0.000731166)*(x-0.000731166)+(y-0.000296085)*(y-0.000296085))*PI/1e-5)
+        }
+        pub fn new(x: f64, y: f64) -> Self {
+    
+            Self {
+                position: cgmath::Point2::<f64>::new(x, y),
+                value: VertexWithData::f(x,y)
+            }
+        }
+    }
+    
+    impl HasPosition for VertexWithData {
+        type Scalar = f64;
+    
+        fn position(&self) -> Point2<f64> {
+            Point2::new(self.position.x, self.position.y)
+        }
+    }
+    #[derive(Default)]
+    struct FaceWithData
+    {
+        value: f64
+    }
     #[test]
     fn test_cdt_refinement()
     {
@@ -1127,32 +1198,49 @@ mod test {
             Point2::new(0.000849866413882,0.000305335216696),
             Point2::new(0.000813260313660,0.000301674606674)
         ];
-        let mut cdt = Cdt::new();
+        let mut cdt:ConstrainedDelaunayTriangulation<VertexWithData,_,_,FaceWithData> = ConstrainedDelaunayTriangulation::new();
         for i in 0.. outer.len() - 1
         {
-           assert!(cdt.add_constraint_edge(outer[i], outer[i+1]).is_ok());    
+           assert!(cdt.add_constraint_edge(outer[i].into(), outer[i+1].into()).is_ok());    
         }
-        assert!(cdt.add_constraint_edge(outer[outer.len()-1], outer[0]).is_ok());   
+        assert!(cdt.add_constraint_edge(outer[outer.len()-1].into(), outer[0].into()).is_ok());   
         for i in 0.. inner1.len() - 1
         {
-            assert!(cdt.add_constraint_edge(inner1[i], inner1[i+1]).is_ok());    
+            assert!(cdt.add_constraint_edge(inner1[i].into(), inner1[i+1].into()).is_ok());    
         }
-        assert!(cdt.add_constraint_edge(inner1[inner1.len()-1], inner1[0]).is_ok());
+        assert!(cdt.add_constraint_edge(inner1[inner1.len()-1].into(), inner1[0].into()).is_ok());
         
         for i in 0.. inner2.len() - 1
         {
-            assert!(cdt.add_constraint_edge(inner2[i], inner2[i+1]).is_ok());
+            assert!(cdt.add_constraint_edge(inner2[i].into(), inner2[i+1].into()).is_ok());
         }
-        assert!(cdt.add_constraint_edge(inner2[inner2.len()-1], inner2[0]).is_ok());
-        
-        let rp = RefinementParameters::new().
-            with_angle_limit(AngleLimit::from_deg(30.0)).
-            with_max_additional_vertices(10000).
+        assert!(cdt.add_constraint_edge(inner2[inner2.len()-1].into(), inner2[0].into()).is_ok());
+        let rp:RefinementParameters<VertexWithData, FaceWithData, f64,DirectedEdgeTag,UndirectedEdgeTag> = RefinementParameters::new().
+            with_angle_limit(AngleLimit::from_deg(20.0)).
+            with_max_additional_vertices(100000).
             exclude_outer_faces(&cdt).
-            with_max_allowed_area(1e-10).
-            with_min_required_area(0.0);
+            with_max_allowed_area(1e-5).
+            with_min_required_area(0.0).
+            with_custom_predicate(Some(Box::new(|face |
+            {
+                let vertices = face.vertices();
+                let v1 = vertices[0].data();
+                let v2 = vertices[1].data();
+                let v3 = vertices[2].data();
+                
+                let vest = (v1.value+v2.value + v3.value)/3.0;
+                let vf = VertexWithData::f((v1.position.x+v2.position.x+v3.position.x)/3.0, (v1.position.y + v2.position.y+v3.position.y)/3.0);                
+                if f64::abs(vest-vf)/vf > 1e-2
+                {
+                    RefinementHint::MustRefine
+                }
+                else
+                {
+                    RefinementHint::Ignore
+                }                
+            })));
         cdt.refine(rp);
-       
+        let mut file = std::fs::File::create("grid.txt").unwrap();      
         //println!("{}",cdt.vertices().len());
         for fh in cdt.constrained_faces()
         {
@@ -1160,7 +1248,8 @@ mod test {
             let v1 = face.vertices()[0].position();
             let v2 = face.vertices()[1].position();
             let v3 = face.vertices()[2].position();
-            println!("POLYGON(({} {},{} {}, {} {}, {} {}))", v1.x, v1.y, v2.x, v2.y, v3.x, v3.y, v1.x, v1.y);
+            let value = (face.vertices()[0].data().value + face.vertices()[1].data().value+face.vertices()[2].data().value)/3.0;
+            writeln!(&mut file, "POLYGON(({} {},{} {}, {} {}, {} {}))|{}", v1.x, v1.y, v2.x, v2.y, v3.x, v3.y, v1.x, v1.y, value).unwrap();
         }
         
     }

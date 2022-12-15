@@ -19,6 +19,7 @@ mod delaunay_core;
 mod delaunay_triangulation;
 mod intersection_iterator;
 mod point;
+mod contour;
 
 mod triangulation;
 

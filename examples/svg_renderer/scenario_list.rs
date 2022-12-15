@@ -9,7 +9,7 @@ use spade::{
         FixedDirectedEdgeHandle,
         VoronoiVertex::{self, Inner, Outer},
     },
-    AngleLimit, InsertionError, RefinementParameters, Triangulation as _,
+    AngleLimit, InsertionError, RefinementParameters, Triangulation as _, CdtEdge,
 };
 
 use crate::{
@@ -919,7 +919,7 @@ pub fn exclude_outer_faces_scenario(do_refine: bool) -> Sketch {
 
     let num_additional_vertices = if do_refine { 500 } else { 0 };
 
-    let parameters = RefinementParameters::<f64>::default()
+    let parameters = RefinementParameters::<_,FaceType,f64,_,_>::default()
         .exclude_outer_faces(&cdt)
         .with_max_additional_vertices(num_additional_vertices);
 

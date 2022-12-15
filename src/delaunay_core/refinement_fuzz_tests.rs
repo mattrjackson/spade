@@ -1,9 +1,11 @@
 use crate::{
     ConstrainedDelaunayTriangulation, InsertionError, Point2, RefinementParameters, Triangulation,
-    TriangulationExt,
+    TriangulationExt, HasPosition
 };
 
-fn refinement_parameters() -> RefinementParameters<f64> {
+fn refinement_parameters<Vertex, Face, DE, UE>() -> RefinementParameters<Vertex, Face, f64, DE, UE> 
+where  Face:Default, Vertex:HasPosition,DE:Default, UE:Default
+{
     RefinementParameters::new().with_max_additional_vertices(1000)
 }
 
