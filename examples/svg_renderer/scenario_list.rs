@@ -919,7 +919,7 @@ pub fn exclude_outer_faces_scenario(do_refine: bool) -> Sketch {
 
     let num_additional_vertices = if do_refine { 500 } else { 0 };
 
-    let parameters = RefinementParameters::<_,FaceType,f64,_,_>::default()
+    let parameters = RefinementParameters::<f64>::default()
         .exclude_outer_faces(&cdt)
         .with_max_additional_vertices(num_additional_vertices);
 

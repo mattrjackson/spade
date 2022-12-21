@@ -3,8 +3,7 @@ use crate::{
     TriangulationExt, HasPosition
 };
 
-fn refinement_parameters<Vertex, Face, DE, UE>() -> RefinementParameters<Vertex, Face, f64, DE, UE> 
-where  Face:Default, Vertex:HasPosition,DE:Default, UE:Default
+fn refinement_parameters() -> RefinementParameters<f64> 
 {
     RefinementParameters::new().with_max_additional_vertices(1000)
 }

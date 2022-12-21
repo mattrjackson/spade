@@ -1,12 +1,9 @@
-use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs::File;
 use std::ops::Fn;
-use std::io::{Write, BufReader, BufRead, Error};
 use num_traits::Float;
 
 use crate::{
-    delaunay_core::{math, VertexTag}, CdtEdge, ConstrainedDelaunayTriangulation, HasPosition, HintGenerator,
+    delaunay_core::math, CdtEdge, ConstrainedDelaunayTriangulation, HasPosition, HintGenerator,
     Point2, PositionInTriangulation, SpadeNum, Triangulation,
 };
 
@@ -14,6 +11,83 @@ use super::{
     FaceHandle, FixedFaceHandle, FixedUndirectedEdgeHandle, FixedVertexHandle, InnerTag,
     TriangulationExt, UndirectedEdgeHandle,
 };
+
+
+pub trait RefinementPredicate<V,F>
+where V: HasPosition, F: Default
+{
+    fn check_face<DE, UE, L>(&self, cdt: &ConstrainedDelaunayTriangulation<V, DE, UE, F, L>, handle: &FixedFaceHandle<InnerTag>, refinement_parameters: &RefinementParameters<V::Scalar>) -> RefinementHint
+    where
+    V: HasPosition + From<Point2<<V as HasPosition>::Scalar>>,
+    DE: Default,
+    UE: Default,
+    L: HintGenerator<<V as HasPosition>::Scalar>,
+    <V as HasPosition>::Scalar: Float;
+}
+
+
+pub struct EmptyPredicate;
+
+impl<V:HasPosition,F:Default> RefinementPredicate<V,F> for EmptyPredicate
+{
+    fn check_face<DE, UE, L>(&self, cdt: &ConstrainedDelaunayTriangulation<V, DE, UE, F, L>, handle: &FixedFaceHandle<InnerTag>, refinement_parameters: &RefinementParameters<V::Scalar>) -> RefinementHint
+    where
+    V: HasPosition + From<Point2<<V as HasPosition>::Scalar>>,
+    DE: Default,
+    UE: Default,
+    F: Default,
+    L: HintGenerator<<V as HasPosition>::Scalar>,
+    <V as HasPosition>::Scalar: Float {
+        RefinementHint::Ignore
+    }
+}
+
+pub struct GeometryPredicate;
+
+impl<V:HasPosition,F:Default> RefinementPredicate<V,F> for GeometryPredicate
+{
+    fn check_face<DE, UE, L>(&self, cdt: &ConstrainedDelaunayTriangulation<V, DE, UE, F, L>, handle: &FixedFaceHandle<InnerTag>, refinement_parameters: &RefinementParameters<V::Scalar>) -> RefinementHint
+    where
+    V: HasPosition + From<Point2<<V as HasPosition>::Scalar>>,
+    DE: Default,
+    UE: Default,
+    F: Default,
+    L: HintGenerator<<V as HasPosition>::Scalar>,
+    <V as HasPosition>::Scalar: Float {
+        let face = cdt.face(*handle);
+        if let Some(max_area) = refinement_parameters.max_area {
+            if face.area() > max_area {
+                return RefinementHint::MustRefine;
+            }
+        }
+        if let Some(min_area) = refinement_parameters.min_area {
+            if face.area() < min_area {
+                return RefinementHint::Ignore;
+            }
+        }
+        // if let Some(custom_predicate) = &self.custom_predicate
+        // {
+        //     let verts= face.vertices();
+        //     let vertices:[&Vertex;3] = [verts[0].data(),verts[1].data(),verts[2].data()]; 
+        //      if custom_predicate(face) == RefinementHint::MustRefine
+        //      {                
+        //         return RefinementHint::MustRefine;
+        //      } 
+        // }
+
+        let (_, length2) = face.shortest_edge();
+        let (_, radius2) = face.circumcircle();
+
+        let ratio2 = radius2 / length2;
+        let angle_limit = refinement_parameters.angle_limit.radius_to_shortest_edge_limit;
+        if ratio2.into() > angle_limit * angle_limit {
+            RefinementHint::ShouldRefine
+        } else {
+            RefinementHint::Ignore
+        }
+    }
+}
+
 
 /// Contains details about the outcome of a refinement procedure.
 ///
@@ -162,30 +236,18 @@ pub enum RefinementHint {
 ///     cdt.refine(params);
 /// }
 /// ```
-pub struct RefinementParameters<Vertex, Face, S: SpadeNum + Float, DE, UE>
-where Vertex:HasPosition,DE:Default, UE:Default
- {
+#[derive(Debug, PartialEq, Clone)]
+pub struct RefinementParameters<S: SpadeNum + Float>
+{
     max_additional_vertices: Option<usize>,
     angle_limit: AngleLimit,
     min_area: Option<S>,
     max_area: Option<S>,
     keep_constraint_edges: bool,
-    excluded_faces: HashSet<FixedFaceHandle<InnerTag>>,
-    custom_predicate: Option<Box<dyn Fn(FaceHandle<InnerTag, Vertex, DE, CdtEdge<UE>, Face>)->RefinementHint>>
-}
-impl<Vertex, Face, S, DE, UE> PartialEq for RefinementParameters<Vertex, Face, S, DE, UE>
-where S:SpadeNum+Float, Vertex:HasPosition,DE:Default, UE:Default
-{
-    fn eq(&self, other: &Self) -> bool {
-        self.max_additional_vertices == other.max_additional_vertices && self.angle_limit == other.angle_limit &&
-         self.min_area == other.min_area && self.max_area == other.max_area && self.keep_constraint_edges == other.keep_constraint_edges && 
-         self.excluded_faces == other.excluded_faces
-    }
+    excluded_faces: HashSet<FixedFaceHandle<InnerTag>>
 }
 
-impl<Vertex, Face, S: SpadeNum + Float, DE, UE> Default for RefinementParameters<Vertex, Face, S, DE, UE> 
-where Vertex:HasPosition,DE:Default, UE:Default
-{
+impl<S: SpadeNum + Float> Default for RefinementParameters<S> {
     fn default() -> Self {
         Self {
             max_additional_vertices: None,
@@ -194,13 +256,11 @@ where Vertex:HasPosition,DE:Default, UE:Default
             max_area: None,
             excluded_faces: HashSet::new(),
             keep_constraint_edges: false,
-            custom_predicate: None
         }
     }
 }
 
-impl<Vertex, Face,  S: SpadeNum + Float, DE, UE> RefinementParameters<Vertex, Face, S, DE, UE>
-where Face:Default, Vertex:HasPosition,DE:Default, UE:Default
+impl<S: SpadeNum + Float> RefinementParameters<S> 
  {
     /// Creates a new set of `RefinementParameters`.
     ///
@@ -237,12 +297,6 @@ where Face:Default, Vertex:HasPosition,DE:Default, UE:Default
     /// *See also [ConstrainedDelaunayTriangulation::refine]*
     pub fn with_angle_limit(mut self, angle_limit: AngleLimit) -> Self {
         self.angle_limit = angle_limit;
-        self
-    }
-
-    pub fn with_custom_predicate(mut self, custom_predicate:Option<Box<dyn Fn(FaceHandle<InnerTag, Vertex, DE, CdtEdge<UE>, Face>)->RefinementHint>>) -> Self
-    {
-        self.custom_predicate = custom_predicate;
         self
     }
 
@@ -327,11 +381,8 @@ where Face:Default, Vertex:HasPosition,DE:Default, UE:Default
     ///
     /// *A refinement operation configured to exclude outer faces. All colored faces are considered outer faces and are
     /// ignored during refinement. Note that the inner part of the "A" shape forms a hole and is also excluded.*
-    pub fn exclude_outer_faces
-    (
-        mut self,
-        triangulation: &ConstrainedDelaunayTriangulation<Vertex, DE, UE, Face>,
-    ) -> Self {
+    pub fn exclude_outer_faces<Vertex: HasPosition, DE:Default, UE:Default, Face:Default> ( mut self, triangulation: &ConstrainedDelaunayTriangulation<Vertex, DE, UE, Face>) -> Self     
+    {
         if triangulation.all_vertices_on_line() {
             return self;
         }
@@ -349,46 +400,46 @@ where Face:Default, Vertex:HasPosition,DE:Default, UE:Default
         self
     }
 
-    fn get_refinement_hint(
-        &self,
-        face: FaceHandle<InnerTag, Vertex, DE, CdtEdge<UE>, Face>,
-    ) -> RefinementHint
-    where
-        Vertex: HasPosition<Scalar = S>,
-        Face:Default,DE:Default, UE:Default
-    {
-        if let Some(max_area) = self.max_area {
-            if face.area() > max_area {
-                return RefinementHint::MustRefine;
-            }
-        }
-        if let Some(min_area) = self.min_area {
-            if face.area() < min_area {
-                return RefinementHint::Ignore;
-            }
-        }
-        if let Some(custom_predicate) = &self.custom_predicate
-        {
-            let verts= face.vertices();
-            let vertices:[&Vertex;3] = [verts[0].data(),verts[1].data(),verts[2].data()]; 
-             if custom_predicate(face) == RefinementHint::MustRefine
-             {                
-                return RefinementHint::MustRefine;
-             } 
-        }
+//     fn get_refinement_hint<V, DE, UE, F>(
+//         &self,
+//         face: FaceHandle<InnerTag, V, DE, UE, F>,
+//     ) -> RefinementHint
+//     where
+//         V: HasPosition<Scalar = S>
+//     {
+//         if let Some(max_area) = self.max_area {
+//             if face.area() > max_area {
+//                 return RefinementHint::MustRefine;
+//             }
+//         }
+//         if let Some(min_area) = self.min_area {
+//             if face.area() < min_area {
+//                 return RefinementHint::Ignore;
+//             }
+//         }
+//         // if let Some(custom_predicate) = &self.custom_predicate
+//         // {
+//         //     let verts= face.vertices();
+//         //     let vertices:[&Vertex;3] = [verts[0].data(),verts[1].data(),verts[2].data()]; 
+//         //      if custom_predicate(face) == RefinementHint::MustRefine
+//         //      {                
+//         //         return RefinementHint::MustRefine;
+//         //      } 
+//         // }
 
-        let (_, length2) = face.shortest_edge();
-        let (_, radius2) = face.circumcircle();
+//         let (_, length2) = face.shortest_edge();
+//         let (_, radius2) = face.circumcircle();
 
-        let ratio2 = radius2 / length2;
-        let angle_limit = self.angle_limit.radius_to_shortest_edge_limit;
-        if ratio2.into() > angle_limit * angle_limit {
-            RefinementHint::ShouldRefine
-        } else {
-            RefinementHint::Ignore
-        }
-    }
+//         let ratio2 = radius2 / length2;
+//         let angle_limit = self.angle_limit.radius_to_shortest_edge_limit;
+//         if ratio2.into() > angle_limit * angle_limit {
+//             RefinementHint::ShouldRefine
+//         } else {
+//             RefinementHint::Ignore
+//         }
+//     }
 }
+
 
 impl<V, DE, UE, F, L> ConstrainedDelaunayTriangulation<V, DE, UE, F, L>
 where
@@ -435,69 +486,7 @@ where
     /// <tr><th>Unrefined</th><th>Refined</th></tr>
     /// <tr><td>
     #[doc = concat!(include_str!("../../images/unrefined.svg"), "</td><td>",include_str!("../../images/refined.svg"), " </td></tr></table>")]
-    ///
-    /// *A refinement example. The CDT on the left has some acute angles and skewed triangles.
-    /// The refined CDT on the right contains several additional points that prevents such triangles from appearing while keeping
-    /// all input vertices and constraint edges.*
-    ///
-    /// # Quality guarantees
-    ///
-    /// Refinement will ensure that the resulting triangulation fulfills a few properties:
-    ///  - The triangulation's minimum angle will be larger than the angle specified by
-    ///    [with_angle_limit](crate::RefinementParameters::with_angle_limit).<br>
-    ///    *Exception*: Acute input angles (small angles between initial constraint edges) cannot be maximized as the constraint edges
-    ///    must be kept intact. The algorithm will, for the most part, leave those places unchanged.<br>
-    ///    *Exception*: The refinement will often not be able to increase the minimal angle much above 30 degrees as every newly
-    ///    inserted steiner point may create additional skewed triangles.
-    ///  - The refinement will fullfil the *Delaunay Property*: Every triangle's circumcenter will not contain any other vertex.<br>
-    ///    *Exception*: Refining with [keep_constraint_edges](crate::RefinementParameters::keep_constraint_edges) cannot restore
-    ///    the Delaunay property if doing so would require splitting a constraint edge.<br>
-    ///    *Exception*: Refining with [exclude_outer_faces](crate::RefinementParameters::exclude_outer_faces) will not
-    ///    restore the Delaunay property of any outer face.
-    ///  - Spade allows to specify a [maximum allowed triangle area](crate::RefinementParameters::with_max_allowed_area).
-    ///    The algorithm will attempt to subdivide any triangle with an area larger than this, independent of its smallest angle.
-    ///  - Spade allows to specify a [minimum required triangle area](crate::RefinementParameters::with_min_required_area).
-    ///    The refinement will attempt to ignore any triangle with an area smaller than this parameter. This can prevent the
-    ///    refinement algorithm from over-refining in some cases.
-    ///
-    /// # General limitations
-    ///
-    /// The algorithm may fail to terminate in some cases for a minimum angle limit larger than 30 degrees. Such a limit can
-    /// result in an endless loop: Every additionally inserted point creates more triangles that need to be refined.
-    ///
-    /// To prevent this, spade limits the number of additionally inserted steiner points
-    /// (see [RefinementParameters::with_max_additional_vertices]). However, this may leave the refinement in an incomplete state -
-    /// some areas of the input mesh may not have been triangulated at all, some will be overly refined.
-    /// Use [RefinementResult::refinement_complete] to identify if a refinement operation has succeeded without running out of
-    /// vertices.
-    ///
-    /// For mitigation, consider either lowering the minimum angle limit
-    /// (see [RefinementParameters::with_angle_limit]) or introduce a
-    /// [minimum required area](RefinementParameters::with_min_required_area).
-    ///
-    /// Meshes with very small input angles (angles between two constraint edges) may lead to poorly refined results.
-    /// Please consider providing a bug report if you encounter an input mesh which you think isn't refined well.
-    ///
-    /// # Stability guarantees
-    ///
-    /// While changing the interface of this method is considered to be a breaking change, changes to the specific
-    /// refinement process (e.g. which faces are split in which order) are not. Any patch release may change how
-    /// the same input mesh is being refined.
-    ///
-    /// # References
-    ///
-    /// This is an adaption of the classical refinement algorithms introduced by Jim Ruppert and Paul Chew.
-    ///
-    /// For a good introduction to the topic, refer to the slides from a short course at the thirteenth and fourteenth
-    /// International Meshing Roundtables (2005) by Jonathan Richard Shewchuk:
-    /// <https://people.eecs.berkeley.edu/~jrs/papers/imrtalk.pdf>
-    ///
-    /// Wikipedia: <https://en.wikipedia.org/wiki/Delaunay_refinement>
-    ///
-    ///
-    #[doc(alias = "Refinement")]
-    #[doc(alias = "Delaunay Refinement")]
-    pub fn refine(&mut self, mut parameters:RefinementParameters<V,F,V::Scalar,DE,UE>) -> RefinementResult {
+    fn refine_internal(&mut self, mut parameters: RefinementParameters<V::Scalar>, primary_predicate: impl RefinementPredicate<V,F>, secondary_predicate: impl RefinementPredicate<V,F>) -> RefinementResult {
         use PositionInTriangulation::*;
 
         let mut excluded_faces = std::mem::take(&mut parameters.excluded_faces);
@@ -629,7 +618,11 @@ where
 
                 let (shortest_edge, _) = face.shortest_edge();
 
-                let refinement_hint = parameters.get_refinement_hint(face);
+                let mut refinement_hint = primary_predicate.check_face(self, &face.fix(), &parameters);
+                if refinement_hint == RefinementHint::Ignore
+                {
+                    refinement_hint = secondary_predicate.check_face(self, &face.fix(), &parameters);
+                }
 
                 if refinement_hint == RefinementHint::Ignore {
                     // Triangle is fine as is and can be skipped
@@ -676,6 +669,7 @@ where
                 //
                 // First step: fill `legalize_edges_buffer` with the initial set of edges that would need to be legalized
                 // if the triangle's circumcenter would be inserted.
+                let keep_constraint_edges = parameters.keep_constraint_edges;
                 match self.locate_with_hint(circumcenter, locate_hint) {
                     OnEdge(edge) => {
                         let edge = self.directed_edge(edge);
@@ -767,6 +761,76 @@ where
             refinement_complete,
         }
     }
+    ///
+    /// *A refinement example. The CDT on the left has some acute angles and skewed triangles.
+    /// The refined CDT on the right contains several additional points that prevents such triangles from appearing while keeping
+    /// all input vertices and constraint edges.*
+    ///
+    /// # Quality guarantees
+    ///
+    /// Refinement will ensure that the resulting triangulation fulfills a few properties:
+    ///  - The triangulation's minimum angle will be larger than the angle specified by
+    ///    [with_angle_limit](crate::RefinementParameters::with_angle_limit).<br>
+    ///    *Exception*: Acute input angles (small angles between initial constraint edges) cannot be maximized as the constraint edges
+    ///    must be kept intact. The algorithm will, for the most part, leave those places unchanged.<br>
+    ///    *Exception*: The refinement will often not be able to increase the minimal angle much above 30 degrees as every newly
+    ///    inserted steiner point may create additional skewed triangles.
+    ///  - The refinement will fullfil the *Delaunay Property*: Every triangle's circumcenter will not contain any other vertex.<br>
+    ///    *Exception*: Refining with [keep_constraint_edges](crate::RefinementParameters::keep_constraint_edges) cannot restore
+    ///    the Delaunay property if doing so would require splitting a constraint edge.<br>
+    ///    *Exception*: Refining with [exclude_outer_faces](crate::RefinementParameters::exclude_outer_faces) will not
+    ///    restore the Delaunay property of any outer face.
+    ///  - Spade allows to specify a [maximum allowed triangle area](crate::RefinementParameters::with_max_allowed_area).
+    ///    The algorithm will attempt to subdivide any triangle with an area larger than this, independent of its smallest angle.
+    ///  - Spade allows to specify a [minimum required triangle area](crate::RefinementParameters::with_min_required_area).
+    ///    The refinement will attempt to ignore any triangle with an area smaller than this parameter. This can prevent the
+    ///    refinement algorithm from over-refining in some cases.
+    ///
+    /// # General limitations
+    ///
+    /// The algorithm may fail to terminate in some cases for a minimum angle limit larger than 30 degrees. Such a limit can
+    /// result in an endless loop: Every additionally inserted point creates more triangles that need to be refined.
+    ///
+    /// To prevent this, spade limits the number of additionally inserted steiner points
+    /// (see [RefinementParameters::with_max_additional_vertices]). However, this may leave the refinement in an incomplete state -
+    /// some areas of the input mesh may not have been triangulated at all, some will be overly refined.
+    /// Use [RefinementResult::refinement_complete] to identify if a refinement operation has succeeded without running out of
+    /// vertices.
+    ///
+    /// For mitigation, consider either lowering the minimum angle limit
+    /// (see [RefinementParameters::with_angle_limit]) or introduce a
+    /// [minimum required area](RefinementParameters::with_min_required_area).
+    ///
+    /// Meshes with very small input angles (angles between two constraint edges) may lead to poorly refined results.
+    /// Please consider providing a bug report if you encounter an input mesh which you think isn't refined well.
+    ///
+    /// # Stability guarantees
+    ///
+    /// While changing the interface of this method is considered to be a breaking change, changes to the specific
+    /// refinement process (e.g. which faces are split in which order) are not. Any patch release may change how
+    /// the same input mesh is being refined.
+    ///
+    /// # References
+    ///
+    /// This is an adaption of the classical refinement algorithms introduced by Jim Ruppert and Paul Chew.
+    ///
+    /// For a good introduction to the topic, refer to the slides from a short course at the thirteenth and fourteenth
+    /// International Meshing Roundtables (2005) by Jonathan Richard Shewchuk:
+    /// <https://people.eecs.berkeley.edu/~jrs/papers/imrtalk.pdf>
+    ///
+    /// Wikipedia: <https://en.wikipedia.org/wiki/Delaunay_refinement>
+    ///
+    ///
+    #[doc(alias = "Refinement")]
+    #[doc(alias = "Delaunay Refinement")]
+    pub fn refine(&mut self, mut parameters: RefinementParameters<V::Scalar>) -> RefinementResult {
+        return self.refine_internal(parameters, GeometryPredicate, EmptyPredicate);        
+    }
+
+    pub fn refine_with_predicate(&mut self, mut parameters: RefinementParameters<V::Scalar>, secondary_predicate: impl RefinementPredicate<V,F>) -> RefinementResult {
+        return self.refine_internal(parameters, GeometryPredicate, secondary_predicate);        
+    }
+
 
     fn is_fixed_edge(edge: UndirectedEdgeHandle<V, DE, CdtEdge<UE>, F>) -> bool {
         edge.is_constraint_edge() || edge.is_part_of_convex_hull()
@@ -925,8 +989,10 @@ mod test {
     use crate::{
         test_utilities::{random_points_with_seed, SEED},
         AngleLimit, ConstrainedDelaunayTriangulation, InsertionError, Point2, RefinementParameters,
-        Triangulation as _, HasPosition, delaunay_core::{refinement::RefinementHint, FaceTag, DirectedEdgeTag, UndirectedEdgeTag},
+        Triangulation as _, HasPosition, delaunay_core::{refinement::{RefinementHint, GeometryPredicate}, FaceTag, DirectedEdgeTag, UndirectedEdgeTag},
     };
+
+    use super::RefinementPredicate;
 
     pub type Cdt = ConstrainedDelaunayTriangulation<Point2<f64>>;
 
@@ -1046,7 +1112,7 @@ mod test {
             cdt.add_constraint_edge(p1, p2)?;
         }
 
-        let excluded_faces = RefinementParameters::<_,_,f64,_,_>::new()
+        let excluded_faces = RefinementParameters::<f64>::new()
             .exclude_outer_faces(&cdt)
             .excluded_faces;
 
@@ -1084,7 +1150,7 @@ mod test {
 
         let scale_factors = [1.0, 2.0, 3.0, 4.0];
 
-        let mut current_excluded_faces = RefinementParameters::<_,_,f64,_,_>::new()
+        let mut current_excluded_faces = RefinementParameters::<f64>::new()
             .exclude_outer_faces(&cdt)
             .excluded_faces;
 
@@ -1093,7 +1159,7 @@ mod test {
         for factor in scale_factors {
             cdt.add_constraint_edges(test_shape().iter().map(|p| p.mul(factor)), true)?;
 
-            let next_excluded_faces = RefinementParameters::<_,_,f64,_,_>::new()
+            let next_excluded_faces = RefinementParameters::<f64>::new()
                 .exclude_outer_faces(&cdt)
                 .excluded_faces;
 
@@ -1116,7 +1182,7 @@ mod test {
                 .exclude_outer_faces(&cdt)
                 .with_angle_limit(AngleLimit::from_radius_to_shortest_edge_ratio(
                     f64::INFINITY,
-                )),
+                ))
         );
 
         assert_eq!(
@@ -1143,7 +1209,7 @@ mod test {
     impl VertexWithData {
         pub fn f(x: f64, y:f64)->f64
         {
-            1e6* f64::sin(f64::sqrt((x-0.000731166)*(x-0.000731166)+(y-0.000296085)*(y-0.000296085))*PI/1e-5)
+            10.0 + 3.0*f64::sin(f64::sqrt((x-0.000731166)*(x-0.000731166)+(y-0.000296085)*(y-0.000296085))*PI/1e-5)
         }
         pub fn new(x: f64, y: f64) -> Self {
     
@@ -1165,6 +1231,36 @@ mod test {
     struct FaceWithData
     {
         value: f64
+    }
+    struct CustomRefinementCriteria;
+    impl<F:Default> RefinementPredicate<VertexWithData,F> for CustomRefinementCriteria
+    {
+        fn check_face<DE, UE, L>(&self, cdt: &ConstrainedDelaunayTriangulation<VertexWithData, DE, UE, F, L>, 
+            handle: &crate::handles::FixedFaceHandle<crate::handles::InnerTag>, _refinement_parameters: 
+            &RefinementParameters<<VertexWithData as HasPosition>::Scalar>) -> RefinementHint
+    where
+    DE: Default,
+    UE: Default,
+    F: Default,
+    L: crate::HintGenerator<<VertexWithData as HasPosition>::Scalar>,
+    <VertexWithData as HasPosition>::Scalar: num_traits::Float {
+        let face =cdt.face(*handle);
+        let vertices = &face.vertices();
+        let v1 = vertices[0].data();
+        let v2 = vertices[1].data();
+        let v3 = vertices[2].data();
+        
+        let vest = (v1.value+v2.value + v3.value)/3.0;
+        let vf = VertexWithData::f((v1.position.x+v2.position.x+v3.position.x)/3.0, (v1.position.y + v2.position.y+v3.position.y)/3.0);                
+        if f64::abs(vest-vf)/vf > 3e-2
+        {
+            RefinementHint::MustRefine
+        }
+        else
+        {
+            RefinementHint::Ignore
+        }                
+    }
     }
     #[test]
     fn test_cdt_refinement()
@@ -1198,7 +1294,7 @@ mod test {
             Point2::new(0.000849866413882,0.000305335216696),
             Point2::new(0.000813260313660,0.000301674606674)
         ];
-        let mut cdt:ConstrainedDelaunayTriangulation<VertexWithData,_,_,FaceWithData> = ConstrainedDelaunayTriangulation::new();
+        let mut cdt:ConstrainedDelaunayTriangulation<VertexWithData,(),(),FaceWithData> = ConstrainedDelaunayTriangulation::new();
         for i in 0.. outer.len() - 1
         {
            assert!(cdt.add_constraint_edge(outer[i].into(), outer[i+1].into()).is_ok());    
@@ -1215,31 +1311,13 @@ mod test {
             assert!(cdt.add_constraint_edge(inner2[i].into(), inner2[i+1].into()).is_ok());
         }
         assert!(cdt.add_constraint_edge(inner2[inner2.len()-1].into(), inner2[0].into()).is_ok());
-        let rp:RefinementParameters<VertexWithData, FaceWithData, f64,DirectedEdgeTag,UndirectedEdgeTag> = RefinementParameters::new().
+        let rp:RefinementParameters<f64> = RefinementParameters::new().
             with_angle_limit(AngleLimit::from_deg(20.0)).
             with_max_additional_vertices(100000).
             exclude_outer_faces(&cdt).
-            with_max_allowed_area(1e-5).
-            with_min_required_area(0.0).
-            with_custom_predicate(Some(Box::new(|face |
-            {
-                let vertices = face.vertices();
-                let v1 = vertices[0].data();
-                let v2 = vertices[1].data();
-                let v3 = vertices[2].data();
-                
-                let vest = (v1.value+v2.value + v3.value)/3.0;
-                let vf = VertexWithData::f((v1.position.x+v2.position.x+v3.position.x)/3.0, (v1.position.y + v2.position.y+v3.position.y)/3.0);                
-                if f64::abs(vest-vf)/vf > 1e-2
-                {
-                    RefinementHint::MustRefine
-                }
-                else
-                {
-                    RefinementHint::Ignore
-                }                
-            })));
-        cdt.refine(rp);
+            with_max_allowed_area(1e-9).
+            with_min_required_area(0.0);
+        cdt.refine_with_predicate(rp, CustomRefinementCriteria);
         let mut file = std::fs::File::create("grid.txt").unwrap();      
         //println!("{}",cdt.vertices().len());
         for fh in cdt.constrained_faces()
@@ -1248,6 +1326,8 @@ mod test {
             let v1 = face.vertices()[0].position();
             let v2 = face.vertices()[1].position();
             let v3 = face.vertices()[2].position();
+            
+            
             let value = (face.vertices()[0].data().value + face.vertices()[1].data().value+face.vertices()[2].data().value)/3.0;
             writeln!(&mut file, "POLYGON(({} {},{} {}, {} {}, {} {}))|{}", v1.x, v1.y, v2.x, v2.y, v3.x, v3.y, v1.x, v1.y, value).unwrap();
         }
